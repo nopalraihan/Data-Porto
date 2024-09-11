@@ -6,7 +6,7 @@ The intended audience for this project is the Salifort Human Resources & Leaders
 
 For this task, I used XGBoost binary classification as an excellent choice in turnover prediction for improved employee retention and reduced cost of re-training new hires.  
 
-Follow this link for my [Executive Summary](https://github.com/israelh88/Capstone-Google_Advanced_Data_Analytics/blob/e54706bb2a0d4bb5366cadcbd4b7f4a514523b81/Salifort%20Capstone%20Project%20-%20Executive%20Summary%20ih.pdf) for this project.
+
 
 ## Table of Contents
 - [Data Sources](#data-sources)
