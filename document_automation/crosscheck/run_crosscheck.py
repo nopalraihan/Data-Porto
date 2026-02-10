@@ -44,9 +44,51 @@ def print_field_result(r: dict):
     indicator = {"MATCH": "[OK]", "MISMATCH": "[!!]", "MISSING": "[??]"}[status]
     pdf_val = (r.get("pdf_value") or "—")[:35]
     xls_val = (r.get("excel_value") or "—")[:35]
-    print(f"  {indicator} {r['field_name']:25s} PDF: {pdf_val:35s} Excel: {xls_val}")
+    sim_info = ""
+    if "similarity_score" in r:
+        sim_info = f" (sim={r['similarity_score']:.2f})"
+    print(f"  {indicator} {r['field_name']:25s} PDF: {pdf_val:35s} Excel: {xls_val}{sim_info}")
     if status == "MISMATCH":
         print(f"       >>> {r.get('notes', '')}")
+
+
+def print_ml_results(result: dict):
+    """Print ML analysis results (anomaly detection, similarity, confidence)."""
+    print("\n  " + "=" * 60)
+    print("  ML-POWERED ANALYSIS")
+    print("  " + "=" * 60)
+
+    # Text similarity
+    if "ml_similarity" in result:
+        print("\n  [TF-IDF Text Similarity]")
+        for field, sim in result["ml_similarity"].items():
+            print(f"    {field:25s} score={sim['score']:.4f}  ({sim['classification']})")
+
+    # Anomaly detection
+    if "ml_anomalies" in result:
+        flags = result["ml_anomalies"]
+        if flags:
+            print(f"\n  [Anomaly Detection] {len(flags)} issue(s) found:")
+            for f in flags:
+                icon = "!!" if f["severity"] == "CRITICAL" else "**"
+                print(f"    [{icon}] {f['severity']:8s} | {f['field']}: {f['message']}")
+                print(f"         Expected: {f['expected']}  |  Actual: {f['actual']}")
+        else:
+            print("\n  [Anomaly Detection] No anomalies detected.")
+
+    # Confidence score
+    if "ml_confidence" in result:
+        conf = result["ml_confidence"]
+        print(f"\n  [Random Forest Confidence Scorer]")
+        print(f"    Confidence Score:  {conf['confidence_score']}%")
+        print(f"    Prediction:        {conf['prediction']}")
+        print(f"    Risk Level:        {conf['risk_level']}")
+        print(f"    Feature Weights:")
+        for feat, weight in conf["feature_contributions"].items():
+            bar = "#" * int(abs(weight) * 50)
+            print(f"      {feat:25s} {weight:+.4f}  {bar}")
+
+    print()
 
 
 def run_crosscheck(pdf_path: str, excel_path: str, output_dir: str):
@@ -118,6 +160,9 @@ def run_crosscheck(pdf_path: str, excel_path: str, output_dir: str):
                 print(f"      Excel says: {r.get('excel_value', 'N/A')}")
                 print(f"      Note: {r.get('notes', '')}")
                 print()
+
+    # ML analysis output
+    print_ml_results(result)
 
     # ── Step 4: Generate reports ──
     print("[4/4] Generating output reports...")
@@ -194,6 +239,9 @@ def run_demo(output_dir: str):
                 print(f"      PDF says:   {r.get('pdf_value', 'N/A')}")
                 print(f"      Excel says: {r.get('excel_value', 'N/A')}")
                 print()
+
+    # ML analysis
+    print_ml_results(result)
 
     # Generate reports
     print("  Generating reports...")

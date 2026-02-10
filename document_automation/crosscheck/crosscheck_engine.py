@@ -1,11 +1,20 @@
 """
 CrosscheckEngine - Compares extracted PDF data against Excel template records.
+
+ML-enhanced with:
+  - TF-IDF fuzzy matching for names/addresses
+  - Anomaly detection for meter readings and billing
+  - Random Forest confidence scoring
 """
 
 import re
 from datetime import datetime
 
 import pandas as pd
+
+from document_automation.ml.text_similarity import TextSimilarity
+from document_automation.ml.anomaly_detector import AnomalyDetector
+from document_automation.ml.confidence_scorer import ConfidenceScorer
 
 
 # Maps Excel column names to PDF field keys
@@ -66,21 +75,38 @@ def _fuzzy_contains(pdf_val: str, excel_val: str) -> bool:
 
 class CrosscheckEngine:
     """
-    Compare PDF-extracted fields against Excel template rows.
+    ML-enhanced crosscheck engine.
+
+    Compare PDF-extracted fields against Excel template rows using:
+      - TF-IDF cosine similarity for fuzzy text matching
+      - Isolation Forest for anomaly detection
+      - Random Forest for overall confidence scoring
 
     Usage:
         engine = CrosscheckEngine(pdf_fields, excel_df)
         results = engine.run()
     """
 
-    def __init__(self, pdf_fields: dict, excel_df: pd.DataFrame):
+    # Text fields that benefit from ML similarity matching
+    TEXT_FIELDS = {"Nama Pelanggan", "Alamat"}
+
+    def __init__(self, pdf_fields: dict, excel_df: pd.DataFrame, use_ml: bool = True):
         """
         Args:
             pdf_fields: dict of field_name -> value (from PLNExtractor.extract_flat())
             excel_df: DataFrame from the 'Data Pelanggan' sheet of the template
+            use_ml: Enable ML-enhanced matching (default True)
         """
         self.pdf_fields = pdf_fields
         self.excel_df = excel_df
+        self.use_ml = use_ml
+
+        # Initialize ML components
+        if self.use_ml:
+            self.text_sim = TextSimilarity()
+            self.anomaly_detector = AnomalyDetector()
+            self.confidence_scorer = ConfidenceScorer()
+            self.confidence_scorer.train()
 
     def run(self) -> dict:
         """
@@ -123,11 +149,51 @@ class CrosscheckEngine:
             "checked_at": datetime.now().isoformat(),
         }
 
-        return {
+        output = {
             "matched_row": matched_row_idx,
             "results": results,
             "summary": summary,
         }
+
+        # ── ML Enhancements ──
+        if self.use_ml:
+            # 1. Compute text similarity scores
+            name_sim = self._ml_text_similarity("nama_pelanggan", "Nama Pelanggan", excel_row)
+            addr_sim = self._ml_text_similarity("alamat", "Alamat", excel_row)
+            output["ml_similarity"] = {
+                "nama_pelanggan": name_sim,
+                "alamat": addr_sim,
+            }
+
+            # Enhance match results with similarity scores
+            for r in results:
+                if r["field_name"] in self.TEXT_FIELDS:
+                    key = COLUMN_TO_FIELD[r["field_name"]]
+                    sim = name_sim if key == "nama_pelanggan" else addr_sim
+                    r["similarity_score"] = sim["score"]
+                    r["similarity_class"] = sim["classification"]
+
+            # 2. Anomaly detection on the PDF data
+            anomaly_flags = self.anomaly_detector.check_single(self.pdf_fields)
+            output["ml_anomalies"] = anomaly_flags
+
+            # 3. Confidence scoring
+            meter_dev = self._compute_meter_deviation(excel_row)
+            billing_dev = self._compute_billing_deviation(excel_row)
+
+            confidence_features = {
+                "match_ratio": matches / total if total > 0 else 0,
+                "name_similarity": name_sim["score"],
+                "address_similarity": addr_sim["score"],
+                "meter_deviation": meter_dev,
+                "billing_deviation": billing_dev,
+                "anomaly_count": len(anomaly_flags),
+                "missing_fields": missing,
+            }
+            confidence_result = self.confidence_scorer.score(confidence_features)
+            output["ml_confidence"] = confidence_result
+
+        return output
 
     def run_all_rows(self) -> list[dict]:
         """
@@ -159,32 +225,48 @@ class CrosscheckEngine:
         return all_results
 
     def _find_matching_row(self) -> int | None:
-        """Find the Excel row that best matches the PDF by ID or meter number."""
+        """
+        Find the Excel row that best matches the PDF.
+
+        Uses exact matching for IDs and meter numbers, plus ML-based
+        TF-IDF similarity for names and addresses when exact match fails.
+        """
         pdf_id = _normalize_numeric(self.pdf_fields.get("id_pelanggan", ""))
         pdf_meter = _normalize(self.pdf_fields.get("nomor_meter", ""))
+        pdf_name = self.pdf_fields.get("nama_pelanggan", "")
+        pdf_addr = self.pdf_fields.get("alamat", "")
 
         best_idx = None
-        best_score = 0
+        best_score = 0.0
 
         for idx in range(len(self.excel_df)):
             row = self.excel_df.iloc[idx]
-            score = 0
+            score = 0.0
 
-            # Match by ID Pelanggan
+            # Match by ID Pelanggan (exact, highest weight)
             excel_id = _normalize_numeric(row.get("ID Pelanggan", ""))
             if pdf_id and excel_id and pdf_id == excel_id:
                 score += 10
 
-            # Match by Nomor Meter
+            # Match by Nomor Meter (exact)
             excel_meter = _normalize(row.get("Nomor Meter", ""))
             if pdf_meter and excel_meter and pdf_meter == excel_meter:
                 score += 5
 
-            # Match by name (partial)
-            pdf_name = _normalize(self.pdf_fields.get("nama_pelanggan", ""))
-            excel_name = _normalize(row.get("Nama Pelanggan", ""))
-            if pdf_name and excel_name and _fuzzy_contains(pdf_name, excel_name):
-                score += 3
+            # ML-enhanced name matching
+            excel_name = str(row.get("Nama Pelanggan", ""))
+            if pdf_name and excel_name:
+                if self.use_ml:
+                    sim = self.text_sim.score(pdf_name, excel_name)
+                    score += sim * 4  # Up to 4 points based on similarity
+                elif _fuzzy_contains(pdf_name, excel_name):
+                    score += 3
+
+            # ML-enhanced address matching
+            excel_addr = str(row.get("Alamat", ""))
+            if pdf_addr and excel_addr and self.use_ml:
+                sim = self.text_sim.score(pdf_addr, excel_addr)
+                score += sim * 2  # Up to 2 points
 
             if score > best_score:
                 best_score = score
@@ -229,7 +311,7 @@ class CrosscheckEngine:
                 result["notes"] = f"PDF='{pdf_norm}' vs Excel='{excel_norm}'"
             return result
 
-        # String comparison
+        # String comparison (ML-enhanced for text fields)
         pdf_norm = _normalize(pdf_value)
         excel_norm = _normalize(excel_value)
 
@@ -239,11 +321,58 @@ class CrosscheckEngine:
         elif _fuzzy_contains(pdf_norm, excel_norm):
             result["match_status"] = "MATCH"
             result["notes"] = "Partial/contains match"
+        elif self.use_ml and excel_col in self.TEXT_FIELDS:
+            sim_score = self.text_sim.score(str(pdf_value), str(excel_value))
+            sim_class = self.text_sim.classify_match(sim_score)
+            if sim_score >= 0.75:
+                result["match_status"] = "MATCH"
+                result["notes"] = f"ML similarity match ({sim_class}, score={sim_score:.2f})"
+            else:
+                result["match_status"] = "MISMATCH"
+                result["notes"] = f"ML similarity={sim_score:.2f} ({sim_class}). PDF='{pdf_value}' vs Excel='{excel_value}'"
         else:
             result["match_status"] = "MISMATCH"
             result["notes"] = f"PDF='{pdf_value}' vs Excel='{excel_value}'"
 
         return result
+
+    def _ml_text_similarity(self, pdf_key: str, excel_col: str, excel_row) -> dict:
+        """Compute ML text similarity between a PDF field and Excel column."""
+        pdf_val = str(self.pdf_fields.get(pdf_key, ""))
+        excel_val = str(excel_row.get(excel_col, ""))
+
+        if not pdf_val or not excel_val:
+            return {"score": 0.0, "classification": "NO_MATCH"}
+
+        score = self.text_sim.score(pdf_val, excel_val)
+        classification = self.text_sim.classify_match(score)
+        return {"score": score, "classification": classification}
+
+    def _compute_meter_deviation(self, excel_row) -> float:
+        """Compute deviation between PDF and Excel meter readings (0=perfect, 1=max deviation)."""
+        pdf_akhir = _normalize_numeric(self.pdf_fields.get("stand_meter_akhir", "0"))
+        excel_akhir = _normalize_numeric(excel_row.get("Stand Meter Akhir", "0"))
+        try:
+            pdf_v = float(pdf_akhir) if pdf_akhir else 0
+            excel_v = float(excel_akhir) if excel_akhir else 0
+            if excel_v == 0:
+                return 0.0
+            return min(abs(pdf_v - excel_v) / excel_v, 1.0)
+        except (ValueError, ZeroDivisionError):
+            return 0.5
+
+    def _compute_billing_deviation(self, excel_row) -> float:
+        """Compute deviation between PDF and Excel billing amounts."""
+        pdf_biaya = _normalize_numeric(self.pdf_fields.get("biaya_listrik", "0"))
+        excel_biaya = _normalize_numeric(excel_row.get("Biaya Listrik (Rp)", "0"))
+        try:
+            pdf_v = float(pdf_biaya) if pdf_biaya else 0
+            excel_v = float(excel_biaya) if excel_biaya else 0
+            if excel_v == 0:
+                return 0.0
+            return min(abs(pdf_v - excel_v) / excel_v, 1.0)
+        except (ValueError, ZeroDivisionError):
+            return 0.5
 
     def _no_match_result(self) -> dict:
         """Return result when no matching row is found in Excel."""

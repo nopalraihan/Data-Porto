@@ -173,6 +173,95 @@ class ReportGenerator:
                 ws2.cell(row=rr, column=4).fill = MISMATCH_FILL
                 ws2.cell(row=rr, column=5, value=r.get("notes", "")).border = BORDER
 
+        # ── ML Analysis Sheet ──
+        if "ml_confidence" in self.result or "ml_anomalies" in self.result:
+            ws_ml = wb.create_sheet("ML Analysis")
+            ML_HEADER = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+
+            ws_ml.cell(row=1, column=1, value="ML-POWERED ANALYSIS").font = Font(bold=True, size=14, color="1F4E79")
+
+            r = 3
+            # Confidence score
+            if "ml_confidence" in self.result:
+                conf = self.result["ml_confidence"]
+                ws_ml.cell(row=r, column=1, value="Random Forest Confidence Score").font = Font(bold=True, size=12, color="1F4E79")
+                r += 1
+                for label, val in [
+                    ("Confidence Score", f"{conf['confidence_score']}%"),
+                    ("Prediction", conf["prediction"]),
+                    ("Risk Level", conf["risk_level"]),
+                ]:
+                    ws_ml.cell(row=r, column=1, value=label).font = Font(bold=True, size=10)
+                    cell = ws_ml.cell(row=r, column=2, value=val)
+                    cell.font = Font(bold=True, size=10)
+                    if val == "VALID":
+                        cell.font = Font(bold=True, color="006100")
+                    elif val in ("SUSPICIOUS", "HIGH"):
+                        cell.font = Font(bold=True, color="9C0006")
+                    r += 1
+
+                r += 1
+                ws_ml.cell(row=r, column=1, value="Feature Contributions").font = Font(bold=True, size=11, color="1F4E79")
+                r += 1
+                for h_idx, h in enumerate(["Feature", "Weight"], start=1):
+                    cell = ws_ml.cell(row=r, column=h_idx, value=h)
+                    cell.font = HEADER_FONT
+                    cell.fill = ML_HEADER
+                    cell.border = BORDER
+                r += 1
+                for feat, weight in conf["feature_contributions"].items():
+                    ws_ml.cell(row=r, column=1, value=feat).border = BORDER
+                    ws_ml.cell(row=r, column=2, value=round(weight, 4)).border = BORDER
+                    ws_ml.cell(row=r, column=2).number_format = "0.0000"
+                    r += 1
+
+            # Text similarity
+            if "ml_similarity" in self.result:
+                r += 1
+                ws_ml.cell(row=r, column=1, value="TF-IDF Text Similarity").font = Font(bold=True, size=12, color="1F4E79")
+                r += 1
+                for h_idx, h in enumerate(["Field", "Score", "Classification"], start=1):
+                    cell = ws_ml.cell(row=r, column=h_idx, value=h)
+                    cell.font = HEADER_FONT
+                    cell.fill = ML_HEADER
+                    cell.border = BORDER
+                r += 1
+                for field, sim in self.result["ml_similarity"].items():
+                    ws_ml.cell(row=r, column=1, value=field).border = BORDER
+                    ws_ml.cell(row=r, column=2, value=sim["score"]).border = BORDER
+                    ws_ml.cell(row=r, column=2).number_format = "0.0000"
+                    ws_ml.cell(row=r, column=3, value=sim["classification"]).border = BORDER
+                    r += 1
+
+            # Anomaly flags
+            if "ml_anomalies" in self.result:
+                flags = self.result["ml_anomalies"]
+                r += 1
+                ws_ml.cell(row=r, column=1, value=f"Anomaly Detection ({len(flags)} flags)").font = Font(
+                    bold=True, size=12, color="1F4E79"
+                )
+                r += 1
+                if flags:
+                    for h_idx, h in enumerate(["Severity", "Field", "Message", "Expected", "Actual"], start=1):
+                        cell = ws_ml.cell(row=r, column=h_idx, value=h)
+                        cell.font = HEADER_FONT
+                        cell.fill = ML_HEADER
+                        cell.border = BORDER
+                    r += 1
+                    for f in flags:
+                        ws_ml.cell(row=r, column=1, value=f["severity"]).border = BORDER
+                        ws_ml.cell(row=r, column=1).fill = MISMATCH_FILL if f["severity"] == "CRITICAL" else MISSING_FILL
+                        ws_ml.cell(row=r, column=2, value=f["field"]).border = BORDER
+                        ws_ml.cell(row=r, column=3, value=f["message"]).border = BORDER
+                        ws_ml.cell(row=r, column=4, value=f["expected"]).border = BORDER
+                        ws_ml.cell(row=r, column=5, value=f["actual"]).border = BORDER
+                        r += 1
+                else:
+                    ws_ml.cell(row=r, column=1, value="No anomalies detected.").font = Font(italic=True, color="006100")
+
+            for c in range(1, 6):
+                ws_ml.column_dimensions[get_column_letter(c)].width = [30, 18, 18, 25, 25][c-1]
+
         wb.save(self.excel_path)
         return self.excel_path
 
@@ -331,6 +420,100 @@ class ReportGenerator:
                 pdf.cell(35, 6, "Notes:", new_x="END")
                 pdf.cell(0, 6, _sanitize(r.get("notes") or ""), new_x="LMARGIN", new_y="NEXT")
                 pdf.ln(4)
+
+        # ── ML Analysis Section ──
+        has_ml = any(k in self.result for k in ("ml_confidence", "ml_similarity", "ml_anomalies"))
+        if has_ml:
+            pdf.add_page()
+            pdf.set_font("Helvetica", "B", 16)
+            pdf.set_text_color(31, 78, 121)
+            pdf.cell(0, 10, "ML-Powered Analysis", new_x="LMARGIN", new_y="NEXT")
+            pdf.set_draw_color(31, 78, 121)
+            pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + page_w, pdf.get_y())
+            pdf.ln(5)
+
+            # Confidence score
+            if "ml_confidence" in self.result:
+                conf = self.result["ml_confidence"]
+                pdf.set_font("Helvetica", "B", 13)
+                pdf.set_text_color(31, 78, 121)
+                pdf.cell(0, 8, "Random Forest Confidence Scorer", new_x="LMARGIN", new_y="NEXT")
+                pdf.ln(2)
+
+                score_val = conf["confidence_score"]
+                if score_val >= 85:
+                    pdf.set_fill_color(198, 239, 206)
+                elif score_val >= 60:
+                    pdf.set_fill_color(255, 235, 156)
+                else:
+                    pdf.set_fill_color(255, 199, 206)
+
+                pdf.set_font("Helvetica", "B", 20)
+                pdf.set_text_color(0, 0, 0)
+                pdf.cell(0, 12, _sanitize(f"{score_val}% Confidence  |  {conf['prediction']}  |  Risk: {conf['risk_level']}"),
+                         fill=True, align="C", new_x="LMARGIN", new_y="NEXT")
+                pdf.ln(5)
+
+                # Feature weights table
+                pdf.set_font("Helvetica", "B", 8)
+                pdf.set_fill_color(68, 114, 196)
+                pdf.set_text_color(255, 255, 255)
+                pdf.cell(60, 6, "Feature", border=1, fill=True, align="C", new_x="END")
+                pdf.cell(30, 6, "Weight", border=1, fill=True, align="C", new_x="LMARGIN", new_y="NEXT")
+                pdf.set_font("Helvetica", "", 8)
+                pdf.set_text_color(0, 0, 0)
+                for feat, weight in conf["feature_contributions"].items():
+                    pdf.set_fill_color(242, 242, 242)
+                    pdf.cell(60, 5, _sanitize(feat), border=1, fill=True, new_x="END")
+                    pdf.cell(30, 5, f"{weight:+.4f}", border=1, fill=True, align="C", new_x="LMARGIN", new_y="NEXT")
+                pdf.ln(5)
+
+            # Text similarity
+            if "ml_similarity" in self.result:
+                pdf.set_font("Helvetica", "B", 13)
+                pdf.set_text_color(31, 78, 121)
+                pdf.cell(0, 8, "TF-IDF Text Similarity", new_x="LMARGIN", new_y="NEXT")
+                pdf.ln(2)
+
+                pdf.set_font("Helvetica", "B", 8)
+                pdf.set_fill_color(68, 114, 196)
+                pdf.set_text_color(255, 255, 255)
+                for h, w in [("Field", 50), ("Score", 25), ("Classification", 35)]:
+                    pdf.cell(w, 6, h, border=1, fill=True, align="C", new_x="END")
+                pdf.ln()
+
+                pdf.set_font("Helvetica", "", 8)
+                pdf.set_text_color(0, 0, 0)
+                for field, sim in self.result["ml_similarity"].items():
+                    pdf.cell(50, 5, _sanitize(field), border=1, new_x="END")
+                    pdf.cell(25, 5, f"{sim['score']:.4f}", border=1, align="C", new_x="END")
+                    pdf.cell(35, 5, sim["classification"], border=1, align="C", new_x="LMARGIN", new_y="NEXT")
+                pdf.ln(5)
+
+            # Anomalies
+            if "ml_anomalies" in self.result:
+                flags = self.result["ml_anomalies"]
+                pdf.set_font("Helvetica", "B", 13)
+                pdf.set_text_color(31, 78, 121)
+                pdf.cell(0, 8, _sanitize(f"Anomaly Detection ({len(flags)} flags)"), new_x="LMARGIN", new_y="NEXT")
+                pdf.ln(2)
+
+                if flags:
+                    for f in flags:
+                        sev_color = (156, 0, 6) if f["severity"] == "CRITICAL" else (156, 101, 0)
+                        pdf.set_font("Helvetica", "B", 9)
+                        pdf.set_text_color(*sev_color)
+                        pdf.cell(0, 6, _sanitize(f"[{f['severity']}] {f['field']}: {f['message']}"),
+                                 new_x="LMARGIN", new_y="NEXT")
+                        pdf.set_font("Helvetica", "", 8)
+                        pdf.set_text_color(0, 0, 0)
+                        pdf.cell(0, 5, _sanitize(f"  Expected: {f['expected']}  |  Actual: {f['actual']}"),
+                                 new_x="LMARGIN", new_y="NEXT")
+                        pdf.ln(2)
+                else:
+                    pdf.set_font("Helvetica", "I", 10)
+                    pdf.set_text_color(0, 97, 0)
+                    pdf.cell(0, 6, "No anomalies detected.", new_x="LMARGIN", new_y="NEXT")
 
         # Footer
         total_pages = pdf.pages_count
